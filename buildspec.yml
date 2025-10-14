@@ -1,28 +1,48 @@
 version: 0.2
 
+env:
+  variables:
+    # set this in CodeBuild project or CodePipeline stage environment variables
+    CLOUDFRONT_DIST_ID: "E3PKXZE97GWXYP"
+
 phases:
   install:
     commands:
       - echo "No installation needed for static HTML"
-
   pre_build:
     commands:
       - echo "Preparing build..."
-
   build:
     commands:
       - echo "Building static HTML site"
       - mkdir -p output
-      # Copy all files to output directory
-      - cp -r * output/ || true
-      # Remove buildspec from artifacts
-      - rm -f output/buildspec.yml
-
+      # Copy all files except the output directory itself and .git
+      # This find command copies top-level entries only (no recursion of directories into themselves)
+      - >
+        find . -maxdepth 1 -mindepth 1 \
+          \( -name './output' -o -name './.git' -o -name './.gitignore' \) -prune -o \
+          -exec cp -r {} output/ \; || true
+      # Remove buildspec from artifacts if present
+      - rm -f output/buildspec.yml || true
   post_build:
     commands:
       - echo "Build complete - $(ls -la output/)"
-      - echo "Invalidating CloudFront cache..."
-      - aws cloudfront create-invalidation --distribution-id E3PKXZE97GWXYP --paths "/*"
+      - |
+        if [ -z "$CLOUDFRONT_DIST_ID" ]; then
+          echo "CLOUDFRONT_DIST_ID not set. Skipping CloudFront invalidation."
+        else
+          echo "Checking CloudFront distribution $CLOUDFRONT_DIST_ID..."
+          if aws cloudfront get-distribution --id "$CLOUDFRONT_DIST_ID" >/dev/null 2>&1; then
+            echo "Distribution exists. Creating invalidation..."
+            aws cloudfront create-invalidation --distribution-id "$CLOUDFRONT_DIST_ID" --paths "/*"
+            echo "Invalidation created."
+          else
+            echo "ERROR: CloudFront distribution $CLOUDFRONT_DIST_ID not found or not accessible."
+            echo "Make sure the distribution ID is correct and the CodeBuild role has cloudfront:GetDistribution and cloudfront:CreateInvalidation permissions."
+            # Fail the build because invalidation cannot be completed.
+            exit 1
+          fi
+        fi
 
 artifacts:
   files:
